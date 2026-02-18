@@ -171,7 +171,79 @@ llamafactory-cli export \
   --export_dir models/GroundedPRM-merged
 ```
 
-## 阶段 G：部署与评测
+## 阶段 G：vLLM 部署（为什么用 + 怎么部署）
+
+### 为什么要用 vLLM
+
+这个仓库大量依赖“OpenAI 兼容 API 调模型”，例如：
+- `pipeline/` 阶段要高并发生成步骤与验证结果。
+- `evaluation/reward_guided_search/Greedy-Search.py` 每轮都要多次采样候选步骤并打分。
+
+用 vLLM 的主要原因：
+
+1. **吞吐高**：连续批处理和高效 KV Cache 对多请求场景更友好。
+2. **接口兼容**：可直接暴露 `/v1/chat/completions`，和 `openai` SDK 对接简单。
+3. **部署成本低**：单条命令即可把 HF 模型拉起为 API 服务。
+4. **适合集群**：便于在 SLURM 上按 GPU 分别部署 policy/reward 两个服务。
+
+### 部署前准备
+
+1. 确认已安装 `vllm` 并能访问模型权重路径。
+2. 确认端口未占用（默认 policy: `8000`，reward: `8001`）。
+3. 确认评测脚本里的模型名与服务 `--served-model-name` 一致。
+
+### 方案 1：单模型部署（最小示例）
+
+```bash
+python -m vllm.entrypoints.openai.api_server \
+  --model /path/to/your/model \
+  --served-model-name policy-model \
+  --host 0.0.0.0 \
+  --port 8000 \
+  --api-key EMPTY
+```
+
+测试连通性（OpenAI 兼容）：
+```bash
+curl http://127.0.0.1:8000/v1/models \
+  -H "Authorization: Bearer EMPTY"
+```
+
+### 方案 2：双模型部署（policy + reward）
+
+仓库已提供脚本：`evaluation/reward_guided_search/deploy_models.sh`。  
+它会：
+- 在 GPU `POLICY_GPU` 上启动 policy 模型；
+- 在 GPU `REWARD_GPU` 上启动 reward 模型；
+- 分别监听 `POLICY_PORT`/`REWARD_PORT`。
+
+执行：
+```bash
+cd evaluation/reward_guided_search
+bash deploy_models.sh
+```
+
+关键配置（脚本内可改）：
+- `POLICY_DIR` / `REWARD_MODEL_DIR`
+- `POLICY_MODEL_NAME` / `REWARD_MODEL_NAME`
+- `POLICY_GPU` / `REWARD_GPU`
+- `POLICY_PORT` / `REWARD_PORT`
+
+### SLURM 场景建议
+
+1. 把部署和评测分成两个作业步骤（先起服务，再跑评测）。
+2. 固定节点名与端口，避免 worker 找不到 API。
+3. 每个服务单独日志文件，便于定位 OOM/端口冲突。
+4. `--gpu-memory-utilization` 保守起步（如 0.85~0.90）。
+
+### 常见问题
+
+1. **请求超时/无响应**：先确认 `curl /v1/models` 能通，再看服务日志是否 OOM。
+2. **模型名不匹配**：客户端传的 `model_name` 必须等于 `--served-model-name`。
+3. **吞吐低**：先降低 `max_tokens`、并发线程数，再观察 GPU 利用率。
+4. **评测脚本连错地址**：检查 `reward_guided_search_eval_api.sh` 的 `node_name/port`。
+
+## 阶段 H：评测
 
 ## 1) ProcessBench
 ```bash
@@ -209,4 +281,3 @@ bash reward_guided_search_eval_api.sh
 2. 多处脚本依赖 API 服务先启动（OpenAI 兼容接口）。
 3. 并发参数（`max_workers`）与模型吞吐强相关，建议先小规模 smoke test。
 4. 若要在 SLURM 上跑，优先将各阶段拆分为独立 job，减少失败重跑成本。
-
