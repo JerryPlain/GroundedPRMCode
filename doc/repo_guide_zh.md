@@ -245,6 +245,8 @@ bash deploy_models.sh
 
 ## 阶段 H：评测
 
+评测细节（原理、原因、命令、输出解释）见：`doc/evaluation_stage_guide_zh.md`
+
 ## 1) ProcessBench
 ```bash
 python evaluation/ProcessBench_eval.py \
